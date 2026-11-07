@@ -851,27 +851,27 @@ def create_member(request):
         #     status=201
         # )
 
-        try:
-            mapping = create_member_biometric_mapping(member)
-            register_member_in_essl(mapping)
+        # try:
+        #     mapping = create_member_biometric_mapping(member)
+        #     register_member_in_essl(mapping)
 
-            biometric_status = "registered"
-            biometric_message = "Member registered successfully in eBioServer."
+        #     biometric_status = "registered"
+        #     biometric_message = "Member registered successfully in eBioServer."
 
-        except Exception as biometric_error:
-            biometric_status = "pending"
-            biometric_message = (
-                "Member created, but biometric registration failed. "
-                "Please retry later."
-            )
-            print(f"eSSL registration error: {biometric_error}", flush=True)
+        # except Exception as biometric_error:
+        #     biometric_status = "pending"
+        #     biometric_message = (
+        #         "Member created, but biometric registration failed. "
+        #         "Please retry later."
+        #     )
+        #     print(f"eSSL registration error: {biometric_error}", flush=True)
 
         return JsonResponse(
             {
                 "message": "Member created successfully",
                 "member_id": member.id,
-                "biometric_status": biometric_status,
-                "biometric_message": biometric_message,
+                # "biometric_status": biometric_status,
+                # "biometric_message": biometric_message,
             },
             status=201
         )
