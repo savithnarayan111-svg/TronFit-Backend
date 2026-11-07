@@ -41,9 +41,9 @@ class EsslAttendanceTimeoutTests(APITestCase):
 
         self.device = BiometricDevice.objects.create(
             tenant=self.tenant,
-            name="uFace302",
+            # name="uFace302",
             serial_number="TEST-SERIAL-001",
-            location="TCR",
+            # location="TCR",
             is_attendance_device=True,
             is_active=True,
         )
