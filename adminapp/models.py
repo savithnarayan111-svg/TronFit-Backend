@@ -37,6 +37,7 @@ class Branch(TenantBaseModel):
     manager_name = models.CharField(max_length=255, blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
     capacity = models.IntegerField(blank=True, null=True)
+    is_active = models.BooleanField(default=True)
 
     def __str__(self):
         return f"{self.tenant.name} - {self.name}"
@@ -197,7 +198,7 @@ class BiometricEmployeeMapping(TenantBaseModel):
             models.CheckConstraint(
                 condition=(
                     models.Q(member__isnull=True)
-                    | models.Q(staff__isnull=True)
+                    | models.Q(staff__isnull=True) 
                 ),
                 name="biometric_mapping_one_person",
             ),

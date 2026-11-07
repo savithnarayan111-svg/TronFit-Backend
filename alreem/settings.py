@@ -34,7 +34,7 @@ DEBUG = False
 
 ALLOWED_HOSTS = [
     # "alreemcentralised-backend.onrender.com",
-    "api.mrfitnesscentre.com",
+    # "api.mrfitnesscentre.com",
     "43.204.238.244",
     "localhost",
     "127.0.0.1",

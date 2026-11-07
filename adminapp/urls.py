@@ -83,7 +83,6 @@ urlpatterns = [
     path("generate_workout/",views.generate_workout,name="generate_workout"),
     path("workout/<str:member_id>/complete/",views.complete_workout_day,name="complete_workout_day"),
 
-
     # path("import-csv/",views.import_csv, name="import_csv"),
     path("essl/sync-employees/",views.essl_sync_employees,name="essl_sync_employees"),
     path("essl/test-employees/",views.essl_test_employees,name="essl_test_employees",),
@@ -95,3 +94,4 @@ urlpatterns = [
     path("attendance/",views.list_attendance,name="list-attendance",),
     
 ]
+

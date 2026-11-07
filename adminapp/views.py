@@ -1,7 +1,7 @@
 from django.http import JsonResponse
 import json
 from datetime import datetime, date, timedelta
-
+from .essl_service import add_essl_employee, get_employee_codes, get_employee_details
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated, BasePermission
 from rest_framework import status
@@ -13,15 +13,12 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-from django.http import JsonResponse
 from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse
 from functools import wraps
 
 import json
 from datetime import datetime, timedelta
 
-from django.http import JsonResponse
 from rest_framework.permissions import IsAuthenticated
 
 from .models import Member, MemberPause
@@ -358,7 +355,6 @@ def admin_profile_view(request):
     })
 
 
-from django.http import JsonResponse
 from datetime import datetime, date, timedelta
 
 
@@ -369,6 +365,110 @@ from .tenant_utils import get_tenant, get_branch_filter
 # ============================================================
 # MEMBERS
 # ============================================================
+
+from django.db import transaction
+from django.utils import timezone
+from .models import BiometricEmployeeMapping
+
+
+def create_member_biometric_mapping(member):
+    existing_codes = set(
+        BiometricEmployeeMapping.objects.values_list(
+            "essl_employee_code", flat=True
+        )
+    )
+
+    # Get codes from eBioServer.
+    remote_codes = set(get_employee_codes())
+
+    candidate = 10001
+
+    while (
+        str(candidate) in existing_codes
+        or str(candidate) in remote_codes
+    ):
+        candidate += 1
+
+    return BiometricEmployeeMapping.objects.create(
+        tenant=member.tenant,
+        essl_employee_code=str(candidate),
+        essl_employee_name=member.name or "",
+        member=member,
+        staff=None,
+        is_active=True,
+        last_synced_at=None,
+    )
+
+
+def register_member_in_essl(mapping):
+    existing_codes = set(get_employee_codes())
+    employee_code = str(mapping.essl_employee_code)
+
+    if employee_code in existing_codes:
+        details = get_employee_details(employee_code)
+        existing_name = (details.get("name") or "").strip()
+        expected_name = (mapping.essl_employee_name or "").strip()
+
+        if existing_name.casefold() != expected_name.casefold():
+            raise RuntimeError(
+                f"Employee code {employee_code} already belongs "
+                f"to '{existing_name}'. Expected '{expected_name}'. "
+                "Registration skipped."
+            )
+
+        # Same code and name already exist in eBioServer.
+        # Mark the mapping as synced without registering again.
+        mapping.last_synced_at = timezone.now()
+        mapping.save(update_fields=["last_synced_at"])
+        return mapping
+
+    result = add_essl_employee(
+        employee_code=employee_code,
+        employee_name=mapping.essl_employee_name,
+        employee_location=settings.ESSL_EMPLOYEE_LOCATION,
+        employee_role="Normal User",
+        verification_type="0",
+    )
+
+    if not result or result.strip().casefold() != "success":
+        raise RuntimeError(f"eSSL registration failed: {result}")
+
+    mapping.last_synced_at = timezone.now()
+    mapping.save(update_fields=["last_synced_at"])
+
+    return mapping
+
+
+def retry_pending_essl_registrations(tenant=None):
+    pending_mappings = BiometricEmployeeMapping.objects.filter(
+        last_synced_at__isnull=True,
+        is_active=True,
+        member__isnull=False,
+    )
+
+    if tenant is not None:
+        pending_mappings = pending_mappings.filter(tenant=tenant)
+
+    results = {
+        "total": pending_mappings.count(),
+        "registered": 0,
+        "failed": 0,
+    }
+
+    for mapping in pending_mappings:
+        try:
+            register_member_in_essl(mapping)
+            results["registered"] += 1
+        except Exception as exc:
+            results["failed"] += 1
+            print(
+                f"eSSL retry failed for code "
+                f"{mapping.essl_employee_code}: {exc}",
+                flush=True,
+            )
+
+    return results
+
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -743,10 +843,35 @@ def create_member(request):
             status="Active",
         )
 
+        # return JsonResponse(
+        #     {
+        #         "message": "Member created successfully",
+        #         "member_id": member.id,
+        #     },
+        #     status=201
+        # )
+
+        try:
+            mapping = create_member_biometric_mapping(member)
+            register_member_in_essl(mapping)
+
+            biometric_status = "registered"
+            biometric_message = "Member registered successfully in eBioServer."
+
+        except Exception as biometric_error:
+            biometric_status = "pending"
+            biometric_message = (
+                "Member created, but biometric registration failed. "
+                "Please retry later."
+            )
+            print(f"eSSL registration error: {biometric_error}", flush=True)
+
         return JsonResponse(
             {
                 "message": "Member created successfully",
                 "member_id": member.id,
+                "biometric_status": biometric_status,
+                "biometric_message": biometric_message,
             },
             status=201
         )
@@ -1776,7 +1901,6 @@ def delete_plan(request, plan_id):
 
 from datetime import date, datetime, timedelta
 from django.db import transaction, IntegrityError
-from django.http import JsonResponse
 
 
 User = get_user_model()
@@ -1808,6 +1932,7 @@ def create_branch(request):
     manager_name = str(data.get("manager_name", "")).strip()
     phone = str(data.get("phone", "")).strip()
     capacity_value = data.get("capacity")
+    is_active = data.get("is_active", True)
     username = str(data.get("admin_username", "")).strip()
     password = data.get("admin_password", "")
 
@@ -1854,6 +1979,7 @@ def create_branch(request):
                 tenant=tenant,
                 name=name,
                 location=location,
+                is_active=is_active,
                 manager_name=manager_name,
                 phone=phone,
                 capacity=capacity,
@@ -1888,6 +2014,7 @@ def create_branch(request):
                 "manager_name": branch.manager_name,
                 "phone": branch.phone,
                 "capacity": branch.capacity,
+                "is_active": branch.is_active,
             },
             "admin": {
                 "id": admin_user.id,
@@ -1924,7 +2051,10 @@ def get_branches(request):
         branches = branches.filter(id=request.user.branch_id)
 
     elif request.user.role != "TENANT_ADMIN":
-        return JsonResponse({"error": "Permission denied"}, status=403)
+        return JsonResponse(
+            {"error": "Permission denied"},
+            status=403,
+        )
 
     branch_data = list(
         branches.order_by("id").values(
@@ -1935,11 +2065,77 @@ def get_branches(request):
             "phone",
             "capacity",
             "tenant_id",
+            "is_active",  # ADDED
         )
     )
 
-    return JsonResponse(branch_data, safe=False, status=200)
+    return JsonResponse(
+        branch_data,
+        safe=False,
+        status=200,
+    )
 
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_branch_members(request, branch_id):
+    """Allow only TENANT_ADMIN to view members of any branch in their tenant."""
+
+    if request.user.role != "TENANT_ADMIN":
+        return JsonResponse(
+            {"error": "Only Tenant Admin can view branch members"},
+            status=403,
+        )
+
+    tenant = get_tenant(request)
+
+    if tenant is None:
+        return JsonResponse(
+            {"error": "User is not assigned to a tenant"},
+            status=403,
+        )
+
+    try:
+        branch = Branch.objects.get(
+            id=branch_id,
+            tenant=tenant,
+        )
+    except Branch.DoesNotExist:
+        return JsonResponse(
+            {"error": "Branch not found"},
+            status=404,
+        )
+
+    members = Member.objects.filter(
+        tenant=tenant,
+        branch=branch,
+    ).select_related("plan").order_by("id")
+
+    member_data = [
+        {
+            "id": member.id,
+            "name": member.name,
+            "phone": member.phone,
+            "email": member.email,
+            "plan": (
+                {"name": member.plan.name}
+                if member.plan else None
+            ),
+        }
+        for member in members
+    ]
+
+    return JsonResponse(
+        {
+            "branch": {
+                "id": branch.id,
+                "name": branch.name,
+            },
+            "count": len(member_data),
+            "members": member_data,
+        },
+        status=200,
+    )
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -2027,7 +2223,10 @@ def update_branch(request, branch_id):
             tenant=tenant,
         )
     except Branch.DoesNotExist:
-        return JsonResponse({"error": "Branch not found"}, status=404)
+        return JsonResponse(
+            {"error": "Branch not found"},
+            status=404,
+        )
 
     if request.user.role == "BRANCH_ADMIN":
         if request.user.branch_id != branch.id:
@@ -2038,42 +2237,70 @@ def update_branch(request, branch_id):
 
     data = request.data
 
+    # UPDATE NAME
     if "name" in data:
         name = str(data.get("name", "")).strip()
+
         if not name:
             return JsonResponse(
                 {"error": "Branch name cannot be empty"},
                 status=400,
             )
+
         branch.name = name
 
+    # UPDATE LOCATION
     if "location" in data:
         branch.location = str(data.get("location", "")).strip()
 
+    # UPDATE MANAGER NAME
     if "manager_name" in data:
         branch.manager_name = str(data.get("manager_name", "")).strip()
 
+    # UPDATE PHONE
     if "phone" in data:
         phone = str(data.get("phone", "")).strip()
+
         if not phone.isdigit() or len(phone) != 10:
             return JsonResponse(
                 {"error": "Enter a valid 10-digit mobile number"},
                 status=400,
             )
+
         branch.phone = phone
 
+    # UPDATE CAPACITY
     if "capacity" in data:
         try:
             capacity = int(data.get("capacity"))
+
             if capacity <= 0:
                 raise ValueError
+
         except (TypeError, ValueError):
             return JsonResponse(
                 {"error": "Capacity must be a positive whole number"},
                 status=400,
             )
+
         branch.capacity = capacity
 
+    # UPDATE BRANCH STATUS
+    if "is_active" in data:
+        is_active = data.get("is_active")
+
+        if isinstance(is_active, str):
+            is_active = is_active.lower() == "true"
+
+        if not isinstance(is_active, bool):
+            return JsonResponse(
+                {"error": "Invalid branch status"},
+                status=400,
+            )
+
+        branch.is_active = is_active
+
+    # SAVE BRANCH
     branch.save()
 
     return JsonResponse(
@@ -2086,6 +2313,7 @@ def update_branch(request, branch_id):
                 "manager_name": branch.manager_name,
                 "phone": branch.phone,
                 "capacity": branch.capacity,
+                "is_active": branch.is_active,
             },
         },
         status=200,
@@ -2147,7 +2375,6 @@ def delete_branch(request, branch_id):
 from decimal import Decimal
 
 from django.db.models import Sum
-from django.http import JsonResponse
 
 
 from .models import (
@@ -3781,7 +4008,6 @@ def update_product(request, product_id):
         status=200
     )
 
-
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def delete_product(request, product_id):
@@ -3839,7 +4065,6 @@ def delete_product(request, product_id):
         {"message": "Product deleted successfully"},
         status=200
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -3975,7 +4200,6 @@ def sales_list(request):
         "sales": data,
     })
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def one_sale(request, sale_id):
@@ -4071,11 +4295,6 @@ def one_sale(request, sale_id):
 # STAFF
 # ============================================================
 from django.contrib.auth import get_user_model
-from django.db import transaction
-from django.http import JsonResponse
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-
 User = get_user_model()
 
 
@@ -4241,7 +4460,6 @@ def create_staff(request):
 
 from django.db.models import Sum
 
-from django.http import JsonResponse
 
 
 @api_view(["GET"])
@@ -4607,7 +4825,6 @@ def delete_staff(request, staff_id):
 
 import json
 
-from django.http import JsonResponse
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -5178,7 +5395,6 @@ def add_member_payment(request, member_id):
 # ENQUIRY
 # ============================================================
 
-from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 
 
@@ -5516,7 +5732,6 @@ def add_expense(request):
 
 import json
 
-from django.http import JsonResponse
 
 
 @api_view(["POST"])
@@ -7728,7 +7943,6 @@ def calculate_growth(current, previous):
 
 from django.conf import settings
 from django.db.models import Sum
-from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from .tenant_utils import get_tenant, get_branch_filter
 @api_view(["POST"])
