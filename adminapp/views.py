@@ -6861,62 +6861,62 @@ Return exactly in this format:
   "tips": []
 }}
 """
-        chat = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a certified sports nutritionist. "
-                        "Return only a valid JSON object. No Markdown or extra text."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7,
-            response_format={"type": "json_object"},
+    chat = client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a certified sports nutritionist. "
+                    "Return only a valid JSON object. No Markdown or extra text."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.7,
+        response_format={"type": "json_object"},
+    )
+
+    ai_response = chat.choices[0].message.content
+
+    try:
+        if not ai_response:
+            raise ValueError("AI returned an empty response.")
+
+        # Remove Markdown code fences if present
+        cleaned_response = ai_response.strip()
+
+        if cleaned_response.startswith("```"):
+            cleaned_response = cleaned_response.replace("```json", "", 1)
+            cleaned_response = cleaned_response.replace("```", "").strip()
+
+        # Extract JSON object if additional text is present
+        start = cleaned_response.find("{")
+        end = cleaned_response.rfind("}")
+
+        if start == -1 or end == -1:
+            raise ValueError("No JSON object found in AI response.")
+
+        cleaned_response = cleaned_response[start:end + 1]
+
+        diet_json = json.loads(cleaned_response)
+
+    except (json.JSONDecodeError, ValueError) as error:
+        print("Diet JSON parsing error:", error)
+        print("Groq raw response:", ai_response)
+
+        return JsonResponse(
+            {
+                "success": False,
+                "error": "AI could not generate a valid diet plan. Please try again."
+            },
+            status=500
         )
 
-        ai_response = chat.choices[0].message.content
-
-        try:
-            if not ai_response:
-                raise ValueError("AI returned an empty response.")
-
-            # Remove Markdown code fences if present
-            cleaned_response = ai_response.strip()
-
-            if cleaned_response.startswith("```"):
-                cleaned_response = cleaned_response.replace("```json", "", 1)
-                cleaned_response = cleaned_response.replace("```", "").strip()
-
-            # Extract JSON object if additional text is present
-            start = cleaned_response.find("{")
-            end = cleaned_response.rfind("}")
-
-            if start == -1 or end == -1:
-                raise ValueError("No JSON object found in AI response.")
-
-            cleaned_response = cleaned_response[start:end + 1]
-
-            diet_json = json.loads(cleaned_response)
-
-        except (json.JSONDecodeError, ValueError) as error:
-            print("Diet JSON parsing error:", error)
-            print("Groq raw response:", ai_response)
-
-            return JsonResponse(
-                {
-                    "success": False,
-                    "error": "AI could not generate a valid diet plan. Please try again."
-                },
-                status=500
-            )
-
-        return JsonResponse({
-            "success": True,
-            "diet_plan": diet_json
-        })
+    return JsonResponse({
+        "success": True,
+        "diet_plan": diet_json
+    })
 
     # chat = client.chat.completions.create(
     #     model="openai/gpt-oss-120b",
